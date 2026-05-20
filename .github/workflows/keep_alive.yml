@@ -1,0 +1,14 @@
+name: Keep Streamlit Alive
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping app
+        run: |
+          curl -s -o /dev/null -w "Status: %{http_code}\n" https://monitoreoapp-yyuk7lk2ey3gitydgfjy58.streamlit.app/TU-APP.streamlit.app
