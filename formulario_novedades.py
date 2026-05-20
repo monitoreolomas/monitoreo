@@ -69,13 +69,23 @@ header[data-testid="stHeader"],
 footer,
 #MainMenu,
 [data-testid="stBottomBlockContainer"],
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+[data-testid="appCreatorAvatar"],
 [class*="_profileContainer"],
 [class*="_profilePreview"],
 [class*="_viewerBadge"],
+[class*="viewerBadge"],
+[class*="ProfilePreview"],
+[class*="styles_viewerBadge__"],
 [class*="_imageMove"],
-[data-testid="appCreatorAvatar"],
-.stDeployButton {
+.stDeployButton,
+.stAppDeployButton {
     display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
 }
 
 /* ── BLOCK CONTAINER ── */
@@ -253,16 +263,12 @@ hr {
     font-size: 0.875rem !important;
 }
 
-/* Success */
-[data-testid="stAlert"][data-baseweb="notification"][kind="positive"],
 div[class*="stSuccess"] > div {
     background-color: rgba(20,184,166,0.12) !important;
     border-left: 3px solid #14b8a6 !important;
     color: #5eead4 !important;
 }
 
-/* Error */
-[data-testid="stAlert"][data-baseweb="notification"][kind="negative"],
 div[class*="stError"] > div {
     background-color: rgba(239,68,68,0.1) !important;
     border-left: 3px solid #ef4444 !important;
@@ -342,6 +348,29 @@ div[class*="stError"] > div {
 }
 
 </style>
+
+<script>
+/* Seguro de respaldo: oculta el badge si el CSS no alcanza */
+function ocultarBadge() {
+    const selectores = [
+        '[class*="viewerBadge"]',
+        '[class*="ProfilePreview"]',
+        '[class*="_profileContainer"]',
+        'a[href*="streamlit.io"]'
+    ];
+    selectores.forEach(sel => {
+        document.querySelectorAll(sel).forEach(el => {
+            let node = el;
+            for (let i = 0; i < 5; i++) {
+                node.style.setProperty('display', 'none', 'important');
+                if (node.parentElement) node = node.parentElement;
+            }
+        });
+    });
+}
+ocultarBadge();
+setInterval(ocultarBadge, 500);
+</script>
 """, unsafe_allow_html=True)
 
 # ---------------------------
