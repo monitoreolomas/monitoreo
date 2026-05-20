@@ -1,766 +1,647 @@
 import streamlit as st
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
-from datetime import timedelta, date
-import math, io, os
+from datetime import datetime
+import gspread
+from google.oauth2 import service_account
+import re
+import pytz
+
+# ---------------------------
+# CONFIG GOOGLE SHEETS (SECRETS)
+# ---------------------------
+
+google_secrets = dict(st.secrets["google"])
+google_secrets["private_key"] = (
+    google_secrets["private_key"]
+    .replace("\\n", "\n")
+    .replace("\r\n", "\n")
+)
+
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+
+creds = service_account.Credentials.from_service_account_info(
+    google_secrets, scopes=SCOPES)
+client = gspread.authorize(creds)
+
+SHEET_ID = "1RFsEMgRx-nfnVxKLTGt_hzB_BmLspqJb9GIRusd8dKM"
+sheet = client.open_by_key(SHEET_ID).get_worksheet(0)
+
+# ---------------------------
+# PAGE CONFIG
+# ---------------------------
 
 st.set_page_config(
-    page_title="COL · Análisis Operativo",
-    page_icon="🔵",
-    layout="wide",
-    initial_sidebar_state="collapsed"
+    page_title="Sistema de Novedades",
+    page_icon="🛡️",
+    layout="centered"
 )
 
-# ── SESSION ────────────────────────────────────────────────────────────────────
-for k, v in [("vista","ejecutiva"), ("pie_mode","turno")]:
-    if k not in st.session_state:
-        st.session_state[k] = v
+# ---------------------------
+# GLOBAL STYLES
+# ---------------------------
 
-# ── PALETA ─────────────────────────────────────────────────────────────────────
-BG      = "#0a0a12"
-BG2     = "#111120"
-CARD    = "#16162a"
-BORDER  = "rgba(139,92,246,0.22)"
-ACCENT  = "#8b5cf6"
-ACCENT2 = "#6d28d9"
-GREEN   = "#10b981"
-AMBER   = "#f59e0b"
-RED     = "#ef4444"
-MUTED   = "#64748b"
-TEXT    = "#e2e8f0"
-TEXT2   = "#94a3b8"
-SEQ_DIV = [GREEN, ACCENT, AMBER, RED, "#38bdf8", "#f472b6", "#a3e635"]
+st.markdown("""
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 
-CHART = dict(
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(0,0,0,0)",
-    font=dict(family="Inter, sans-serif", size=12, color=TEXT),
-    margin=dict(l=10, r=10, t=36, b=10),
-)
-
-# ── CSS ────────────────────────────────────────────────────────────────────────
-st.markdown(f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-html,body,[class*="css"]{{font-family:'Inter',sans-serif;background:{BG};color:{TEXT};font-size:14px;}}
-#MainMenu,footer,header{{visibility:hidden;}}
-.block-container{{padding:.8rem 1.4rem 1.4rem;max-width:100%;background:{BG};}}
 
-.topbar{{
-    display:flex;align-items:center;gap:18px;
-    background:linear-gradient(90deg,{BG2} 0%,#1a1535 50%,{BG2} 100%);
-    border:1px solid {BORDER};border-radius:16px;
-    padding:14px 24px;margin-bottom:14px;
-    box-shadow:0 4px 24px rgba(0,0,0,0.5);
-}}
-.topbar-title{{font-size:1.3rem;font-weight:800;color:{TEXT};letter-spacing:-.3px;}}
-.topbar-sub{{font-size:.8rem;color:{TEXT2};margin-top:2px;}}
-.topbar-live{{
-    display:inline-flex;align-items:center;gap:6px;margin-left:auto;
-    background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);
-    border-radius:100px;padding:4px 12px;
-    font-size:.72rem;font-weight:600;color:#6ee7b7;letter-spacing:.06em;
-}}
-.live-dot{{
-    width:6px;height:6px;border-radius:50%;background:{GREEN};
-    box-shadow:0 0 6px {GREEN};
-    animation:pulse 2s infinite;
-}}
-@keyframes pulse{{0%,100%{{opacity:1;box-shadow:0 0 6px {GREEN};}}50%{{opacity:.5;box-shadow:0 0 12px {GREEN};}}}}
+/* ── RESET & BASE ── */
+*, *::before, *::after { box-sizing: border-box; }
 
-.kpi{{
-    background:{CARD};border:1px solid {BORDER};border-radius:18px;
-    padding:16px 18px;position:relative;overflow:hidden;
-}}
-.kpi::before{{
-    content:'';position:absolute;top:0;left:0;right:0;height:3px;
-    background:linear-gradient(90deg,{ACCENT},{ACCENT2});border-radius:18px 18px 0 0;
-}}
-.kpi-icon{{font-size:1.4rem;margin-bottom:4px;line-height:1;}}
-.kpi-label{{font-size:.72rem;color:{TEXT2};font-weight:600;letter-spacing:.07em;text-transform:uppercase;}}
-.kpi-val{{font-size:1.9rem;font-weight:800;color:{TEXT};line-height:1.1;margin:3px 0;}}
-.kpi-d-pos{{font-size:.73rem;color:{GREEN};font-weight:600;}}
-.kpi-d-neg{{font-size:.73rem;color:{RED};font-weight:600;}}
-.kpi-d-neu{{font-size:.73rem;color:{MUTED};font-weight:600;}}
-.kpi-sub{{font-size:.7rem;color:{MUTED};margin-top:2px;}}
+html, body, [data-testid="stAppViewContainer"],
+[data-testid="stAppViewBlockContainer"],
+.main, .block-container {
+    background-color: #0b1120 !important;
+    font-family: 'DM Sans', sans-serif !important;
+}
 
-.card{{
-    background:{CARD};border:1px solid rgba(139,92,246,0.14);
-    border-radius:18px;padding:16px 18px 14px;margin-bottom:14px;
-    box-shadow:0 4px 20px rgba(0,0,0,0.3);
-}}
-.card-title{{
-    font-size:.8rem;font-weight:700;color:{TEXT};
-    letter-spacing:.04em;text-transform:uppercase;
-    border-bottom:1px solid rgba(139,92,246,0.15);
-    padding-bottom:7px;margin-bottom:10px;
-    display:flex;align-items:center;gap:7px;
-}}
+[data-testid="stAppViewContainer"] {
+    background-image:
+        radial-gradient(ellipse 80% 50% at 50% -10%, rgba(20,184,166,0.12) 0%, transparent 70%),
+        linear-gradient(180deg, #0b1120 0%, #0d1526 100%) !important;
+    min-height: 100vh;
+}
 
-.alert{{background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:12px;padding:9px 14px;font-size:.83rem;color:#fca5a5;margin-bottom:10px;}}
-.alert-ok{{background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.25);border-radius:12px;padding:9px 14px;font-size:.83rem;color:#6ee7b7;margin-bottom:10px;}}
+/* ── HIDE STREAMLIT CHROME ── */
+header[data-testid="stHeader"],
+footer,
+#MainMenu,
+[data-testid="stBottomBlockContainer"],
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+[data-testid="appCreatorAvatar"],
+[class*="_profileContainer"],
+[class*="_profilePreview"],
+[class*="_viewerBadge"],
+[class*="viewerBadge"],
+[class*="ProfilePreview"],
+[class*="styles_viewerBadge__"],
+[class*="_imageMove"],
+.stDeployButton,
+.stAppDeployButton {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
 
-/* Nav tabs styled */
-.stButton>button{{border-radius:12px!important;font-weight:600!important;font-size:.82rem!important;padding:7px 14px!important;transition:all .15s!important;}}
-.stDownloadButton button{{background:{ACCENT}!important;color:#fff!important;border:none!important;border-radius:12px!important;font-weight:700!important;font-size:.82rem!important;padding:8px 14px!important;}}
-.stDownloadButton button:hover{{background:{GREEN}!important;}}
-.js-plotly-plot .plotly .modebar{{display:none!important;}}
-hr{{border-color:rgba(139,92,246,0.12);margin:10px 0;}}
-label{{font-size:.82rem!important;color:{TEXT2}!important;font-weight:500!important;}}
+/* ── BLOCK CONTAINER ── */
+.block-container {
+    max-width: 780px !important;
+    padding: 2.5rem 2rem 4rem !important;
+}
 
-/* Expander styling */
-[data-testid="stExpander"]{{
-    background:{CARD}!important;
-    border:1px solid rgba(139,92,246,0.2)!important;
-    border-radius:14px!important;
-    margin-bottom:12px!important;
-}}
-[data-testid="stExpander"] summary{{color:{TEXT2}!important;font-weight:600!important;font-size:.85rem!important;}}
+/* ── TYPOGRAPHY ── */
+p, label, .stMarkdown p {
+    font-family: 'DM Sans', sans-serif !important;
+    color: #94a3b8 !important;
+    font-size: 0.875rem !important;
+}
+
+/* ── SECTION HEADER LABELS ── */
+.stSelectbox label,
+.stTextInput label,
+.stDateInput label {
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.75rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.08em !important;
+    text-transform: uppercase !important;
+    color: #64748b !important;
+    margin-bottom: 4px !important;
+}
+
+/* ── INPUTS & SELECTS ── */
+.stTextInput input,
+.stDateInput input {
+    background-color: #111827 !important;
+    border: 1px solid #1e2d45 !important;
+    border-radius: 8px !important;
+    color: #e2e8f0 !important;
+    font-family: 'DM Mono', monospace !important;
+    font-size: 0.9rem !important;
+    padding: 0.6rem 0.875rem !important;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+    height: 44px !important;
+}
+
+.stTextInput input:focus,
+.stDateInput input:focus {
+    border-color: #14b8a6 !important;
+    box-shadow: 0 0 0 3px rgba(20,184,166,0.15) !important;
+    outline: none !important;
+}
+
+.stTextInput input::placeholder {
+    color: #334155 !important;
+    font-family: 'DM Mono', monospace !important;
+}
+
+/* Selectbox */
+.stSelectbox > div > div {
+    background-color: #111827 !important;
+    border: 1px solid #1e2d45 !important;
+    border-radius: 8px !important;
+    color: #e2e8f0 !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.9rem !important;
+    min-height: 44px !important;
+    transition: border-color 0.2s ease !important;
+}
+
+.stSelectbox > div > div:hover {
+    border-color: #334155 !important;
+}
+
+.stSelectbox > div > div:focus-within {
+    border-color: #14b8a6 !important;
+    box-shadow: 0 0 0 3px rgba(20,184,166,0.15) !important;
+}
+
+.stSelectbox [data-baseweb="select"] span {
+    color: #e2e8f0 !important;
+    font-family: 'DM Sans', sans-serif !important;
+}
+
+/* Dropdown menu */
+[data-baseweb="popover"],
+[data-baseweb="menu"],
+[data-baseweb="select"] ul {
+    background-color: #1a2640 !important;
+    border: 1px solid #1e2d45 !important;
+    border-radius: 8px !important;
+}
+
+[data-baseweb="option"] {
+    background-color: transparent !important;
+    color: #cbd5e1 !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.875rem !important;
+}
+
+[data-baseweb="option"]:hover,
+[data-baseweb="option"][aria-selected="true"] {
+    background-color: rgba(20,184,166,0.15) !important;
+    color: #14b8a6 !important;
+}
+
+/* SVG icons in selectbox */
+.stSelectbox svg { color: #475569 !important; }
+
+/* ── DATE PICKER ── */
+[data-baseweb="calendar"] {
+    background-color: #1a2640 !important;
+    border: 1px solid #1e2d45 !important;
+    border-radius: 12px !important;
+}
+
+[data-baseweb="calendar"] * { color: #cbd5e1 !important; }
+
+/* ── DIVIDER ── */
+hr {
+    border: none !important;
+    border-top: 1px solid #1e2d45 !important;
+    margin: 1.5rem 0 !important;
+}
+
+/* ── CONTAINER / CARD ── */
+[data-testid="stVerticalBlockBorderWrapper"] > div {
+    background: linear-gradient(145deg, #111827 0%, #0f1e30 100%) !important;
+    border: 1px solid #1e2d45 !important;
+    border-radius: 16px !important;
+    padding: 2rem !important;
+    box-shadow: 0 4px 40px rgba(0,0,0,0.4), 0 1px 0 rgba(255,255,255,0.03) inset !important;
+    position: relative !important;
+    overflow: hidden !important;
+}
+
+[data-testid="stVerticalBlockBorderWrapper"] > div::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(20,184,166,0.4), transparent);
+}
+
+/* ── BUTTON ── */
+.stButton > button {
+    background: linear-gradient(135deg, #0d9488 0%, #14b8a6 100%) !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: 10px !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-weight: 600 !important;
+    font-size: 0.9rem !important;
+    letter-spacing: 0.04em !important;
+    height: 48px !important;
+    padding: 0 2rem !important;
+    transition: all 0.2s ease !important;
+    box-shadow: 0 4px 20px rgba(20,184,166,0.3) !important;
+    position: relative !important;
+    overflow: hidden !important;
+}
+
+.stButton > button:hover {
+    transform: translateY(-1px) !important;
+    box-shadow: 0 6px 28px rgba(20,184,166,0.45) !important;
+    background: linear-gradient(135deg, #0f9d91 0%, #2dd4bf 100%) !important;
+}
+
+.stButton > button:active {
+    transform: translateY(0) !important;
+    box-shadow: 0 2px 12px rgba(20,184,166,0.3) !important;
+}
+
+/* ── ALERTS ── */
+[data-testid="stAlert"] {
+    border-radius: 10px !important;
+    border: none !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.875rem !important;
+}
+
+div[class*="stSuccess"] > div {
+    background-color: rgba(20,184,166,0.12) !important;
+    border-left: 3px solid #14b8a6 !important;
+    color: #5eead4 !important;
+}
+
+div[class*="stError"] > div {
+    background-color: rgba(239,68,68,0.1) !important;
+    border-left: 3px solid #ef4444 !important;
+    color: #fca5a5 !important;
+}
+
+/* ── COLUMNS GAP ── */
+[data-testid="stHorizontalBlock"] { gap: 1.25rem !important; }
+
+/* ── BADGE HEADER ── */
+.badge-header {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(20,184,166,0.1);
+    border: 1px solid rgba(20,184,166,0.25);
+    border-radius: 100px;
+    padding: 5px 14px 5px 10px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #5eead4;
+    margin-bottom: 1.25rem;
+}
+
+.badge-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #14b8a6;
+    box-shadow: 0 0 6px #14b8a6;
+    animation: pulse-dot 2s infinite;
+}
+
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; box-shadow: 0 0 6px #14b8a6; }
+    50% { opacity: 0.6; box-shadow: 0 0 12px #14b8a6; }
+}
+
+.main-title {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 2rem;
+    font-weight: 600;
+    color: #f1f5f9;
+    margin: 0 0 0.35rem;
+    letter-spacing: -0.025em;
+    line-height: 1.2;
+}
+
+.main-subtitle {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.875rem;
+    font-weight: 400;
+    color: #475569;
+    margin: 0 0 2rem;
+}
+
+.section-label {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #334155;
+    margin: 1.5rem 0 0.85rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid #1e2d45;
+}
+
+.field-hint {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.72rem;
+    color: #334155;
+    margin-top: 3px;
+}
+
 </style>
+
+<script>
+/* Seguro de respaldo: oculta el badge si el CSS no alcanza */
+function ocultarBadge() {
+    const selectores = [
+        '[class*="viewerBadge"]',
+        '[class*="ProfilePreview"]',
+        '[class*="_profileContainer"]',
+        'a[href*="streamlit.io"]'
+    ];
+    selectores.forEach(sel => {
+        document.querySelectorAll(sel).forEach(el => {
+            let node = el;
+            for (let i = 0; i < 5; i++) {
+                node.style.setProperty('display', 'none', 'important');
+                if (node.parentElement) node = node.parentElement;
+            }
+        });
+    });
+}
+ocultarBadge();
+setInterval(ocultarBadge, 500);
+</script>
 """, unsafe_allow_html=True)
 
-# ── DATA ───────────────────────────────────────────────────────────────────────
-CSV_URL = (
-    "https://docs.google.com/spreadsheets/d/e/"
-    "2PACX-1vRBFU12b6jgWRdNJbj5yKqKJ0iucps7HFJlkmKyjNi2DeccbtnnBM4aQEEbxKOAgKL78DUZJwFIJauX"
-    "/pub?gid=2079582736&single=true&output=csv"
+# ---------------------------
+# HEADER
+# ---------------------------
+
+col_logo, col_text = st.columns([1, 8])
+
+with col_logo:
+    st.image("logo_izquierda.png", width=64)
+
+with col_text:
+    st.markdown("""
+    <div style="padding-top: 6px;">
+        <div class="badge-header">
+            <span class="badge-dot"></span>
+            Sistema activo
+        </div>
+        <div class="main-title">Carga de Novedades</div>
+        <div class="main-subtitle">Registro de incidentes — Partido de Lomas de Zamora</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+st.markdown("---")
+
+# ---------------------------
+# CONFIG DATOS
+# ---------------------------
+
+categorias = {
+    "Robo":                    ["Moto", "Auto", "Via pública", "Finca", "Comercio", "Tentativa"],
+    "Hurto":                   ["Moto", "Auto", "Via pública", "Finca", "Comercio", "Escuela", "Tentativa"],
+    "Accidente de tránsito":   ["Daños materiales", "Con lesiones"],
+    "Conflicto":               ["Vecinal", "Familiar", "Pareja"],
+    "Violencia":               ["Violencia de Género", "Maltrato animal", "Violencia Infantil", "Violencia Familia"],
+    "Heridos":                 ["Arma de fuego", "Arma blanca"],
+    "Persecución":             ["Con aprendido", "Fugó"],
+    "Obito":                   ["Homicidio", "Natural", "Suicidio"],
+    "Incendios":               ["Via pública", "Comercio", "Automotor", "Finca", "Escuela"],
+    "Otros":                   []
+}
+
+comisarias = [
+    "Cria 1ra", "Cria 2da", "Cria 3ra", "Cria 4ta", "Cria 5ta",
+    "Cria 6ta", "Cria 7ma", "Cria 8va", "Cria 9na", "Cria 10ma",
+    "Dto Turdera", "Dto Banfield", "Dto Villa Rita"
+]
+
+cgm_opciones = [
+    "Banfield", "Ingeniero Budge", "Llavallol", "Lomas de Zamora",
+    "Parque Barón", "San José", "Santa Catalina", "Santa Marta",
+    "Temperley", "Turdera", "Villa Albertina", "Villa Centenario",
+    "Villa Fiorito", "Villa Lamadrid"
+]
+
+# ---------------------------
+# SESSION STATE
+# ---------------------------
+
+if "form_key" not in st.session_state:
+    st.session_state.form_key = 0
+if "success_msg" not in st.session_state:
+    st.session_state.success_msg = None
+if "error_msg" not in st.session_state:
+    st.session_state.error_msg = None
+
+# ---------------------------
+# MENSAJES DE ESTADO
+# ---------------------------
+
+if st.session_state.success_msg:
+    st.success(st.session_state.success_msg)
+    st.session_state.success_msg = None
+
+if st.session_state.error_msg:
+    st.error(st.session_state.error_msg)
+    st.session_state.error_msg = None
+
+# ---------------------------
+# FORMULARIO
+# ---------------------------
+
+fk = st.session_state.form_key
+
+with st.container(border=True):
+
+    # — Bloque 1: Temporalidad —
+    st.markdown('<div class="section-label">① Temporalidad</div>', unsafe_allow_html=True)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        fecha = st.date_input(
+            "Fecha del evento",
+            datetime.today(),
+            key=f"fecha_{fk}"
+        )
+    with col2:
+        horario = st.text_input(
+            "Horario",
+            value="",
+            placeholder="HH:MM",
+            key=f"horario_{fk}"
+        )
+        st.markdown('<div class="field-hint">Formato 24 h — ej: 08:30 / 21:45</div>',
+                    unsafe_allow_html=True)
+
+    # — Bloque 2: Jurisdicción —
+    st.markdown('<div class="section-label">② Jurisdicción</div>', unsafe_allow_html=True)
+
+    col3, col4, col5 = st.columns(3)
+    with col3:
+        comisaria = st.selectbox(
+            "Comisaría",
+            options=["Seleccione"] + comisarias,
+            index=0,
+            key=f"comisaria_{fk}"
+        )
+    with col4:
+        cgm = st.selectbox(
+            "CGM",
+            options=["Seleccione"] + cgm_opciones,
+            index=0,
+            key=f"cgm_{fk}"
+        )
+    with col5:
+        camara_flag = st.selectbox(
+            "¿Se ve por cámara?",
+            options=["Seleccione", "SI", "NO"],
+            index=0,
+            key=f"camara_{fk}"
+        )
+
+    if camara_flag == "SI":
+        numero_camara = st.text_input(
+            "Número de cámara",
+            placeholder="Ej: CAM-047",
+            key=f"num_camara_{fk}"
+        )
+
+    # — Bloque 3: Tipo de incidente —
+    st.markdown('<div class="section-label">③ Tipo de incidente</div>', unsafe_allow_html=True)
+
+    col6, col7 = st.columns(2)
+    with col6:
+        categoria = st.selectbox(
+            "Categoría",
+            options=["Seleccione"] + list(categorias.keys()),
+            index=0,
+            key=f"categoria_{fk}"
+        )
+    with col7:
+        if categoria not in ["Seleccione", "Otros"]:
+            subcategoria = st.selectbox(
+                "Subcategoría",
+                options=["Seleccione"] + categorias[categoria],
+                index=0,
+                key=f"subcat_{categoria}_{fk}"
+            )
+        elif categoria == "Otros":
+            subcategoria = "Otros"
+            st.selectbox(
+                "Subcategoría",
+                options=["—  No aplica  —"],
+                disabled=True,
+                key=f"subcat_disabled_{fk}"
+            )
+        else:
+            subcategoria = "Seleccione"
+            st.selectbox(
+                "Subcategoría",
+                options=["Seleccione categoría primero"],
+                disabled=True,
+                key=f"subcat_empty_{fk}"
+            )
+
+# Botón de guardado
+st.markdown("<div style='height: 1.25rem'></div>", unsafe_allow_html=True)
+submitted = st.button(
+    "Guardar Novedad  →",
+    use_container_width=True,
+    key=f"submit_{fk}"
 )
 
-EXCEL_EPOCH = pd.Timestamp("1899-12-30")
+# ---------------------------
+# VALIDACIÓN + GUARDADO
+# ---------------------------
 
-@st.cache_data(ttl=300)
-def load():
-    df = pd.read_csv(CSV_URL)
-    df.columns = df.columns.str.strip()
-    df = df.rename(columns={
-        "Categoria":          "Categoría",
-        "Comisaria":          "Comisaría",
-        "Camara del Evento":  "Cámara",
-    })
+if submitted:
 
-    # ── Marca temporal: puede ser string "dd/mm/yyyy HH:MM:SS" o serial numérico
-    def parse_ts(val):
-        if pd.isna(val): return pd.NaT
-        try:
-            return pd.to_datetime(str(val), format="%d/%m/%Y %H:%M:%S")
-        except Exception:
-            pass
-        try:
-            return EXCEL_EPOCH + pd.to_timedelta(float(val), unit="D")
-        except Exception:
-            return pd.NaT
+    fk = st.session_state.form_key
 
-    df["ts"]      = df["Marca temporal"].apply(parse_ts)
-    df            = df.dropna(subset=["ts"])
-    df["hora"]    = df["ts"].dt.hour
-    df["weekday"] = df["ts"].dt.dayofweek
-    df["fecha"]   = df["ts"].dt.date
-    df["mes"]     = df["ts"].dt.to_period("M").astype(str)
+    categoria_val  = st.session_state.get(f"categoria_{fk}", "Seleccione")
+    subcat_key     = f"subcat_{categoria_val}_{fk}"
+    subcat_val     = st.session_state.get(subcat_key, "Seleccione")
+    if categoria_val == "Otros":
+        subcat_val = "Otros"
 
-    def turno(h, wd):
-        if wd < 5:
-            if 6  <= h < 14: return "Mañana"
-            if 14 <= h < 22: return "Tarde"
-            return "Noche"
-        return "Mañana" if 6 <= h < 18 else "Noche"
+    horario_input  = st.session_state.get(f"horario_{fk}", "").strip()
+    fecha_val      = st.session_state.get(f"fecha_{fk}", datetime.today())
+    comisaria_val  = st.session_state.get(f"comisaria_{fk}", "Seleccione")
+    cgm_val        = st.session_state.get(f"cgm_{fk}", "Seleccione")
+    camara_val     = st.session_state.get(f"camara_{fk}", "Seleccione")
+    num_camara_val = st.session_state.get(f"num_camara_{fk}", "")
 
-    df["Turno"]   = df.apply(lambda r: turno(r["hora"], r["weekday"]), axis=1)
-    df["DiaNom"]  = df["weekday"].map({0:"Lun",1:"Mar",2:"Mié",3:"Jue",4:"Vie",5:"Sáb",6:"Dom"})
-    df["TipoDia"] = df["weekday"].apply(lambda x: "Semana" if x < 5 else "Fin de semana")
-    df["Franja"]  = df["hora"].apply(
-        lambda h: ["00-03","03-06","06-09","09-12","12-15","15-18","18-21","21-00"][min(h//3,7)]
-    )
+    errores = []
+    horario_valido = re.match(r"^([01]\d|2[0-3]):([0-5]\d)$", horario_input)
 
-    # Subcategoría unificada
-    if "Subcategoria" not in df.columns:
-        sc = [c for c in df.columns if c.startswith("Subcategoria ")]
-        df["Subcategoria"] = df[sc].replace("", pd.NA).bfill(axis=1).iloc[:,0].fillna("")
-    df["Subcategoria"] = df["Subcategoria"].fillna("").str.strip()
-    df["CGM"]          = df["CGM"].fillna("Sin CGM").str.strip()
-    df["con_camara"]   = df["¿Se ve por cámara?"].str.upper().str.strip() == "SI"
+    if not horario_valido:
+        errores.append("Horario inválido — usar formato HH:MM (ej: 08:30)")
+    if comisaria_val == "Seleccione":
+        errores.append("Debe seleccionar una Comisaría")
+    if cgm_val == "Seleccione":
+        errores.append("Debe seleccionar un CGM")
+    if categoria_val == "Seleccione":
+        errores.append("Debe seleccionar una Categoría")
+    if categoria_val not in ["Seleccione", "Otros"] and subcat_val == "Seleccione":
+        errores.append("Debe seleccionar una Subcategoría")
+    if camara_val == "Seleccione":
+        errores.append("Debe indicar si se ve por cámara")
 
-    riesgo_map = {
-        "Robo":3,"Hurto":2,"Heridos":5,"Obito":5,"Violencia":4,
-        "Persecución":3,"Accidente de tránsito":2,"Conflicto":2,"Incendios":3,"Otros":1
-    }
-    df["riesgo"] = df["Categoría"].map(riesgo_map).fillna(1)
-    return df
-
-with st.spinner(""):
-    try:
-        df = load()
-    except Exception as e:
-        st.error(f"Error cargando datos: {e}"); st.stop()
-
-min_d = df["fecha"].min()
-max_d = df["fecha"].max()
-cgms_lista  = sorted(df["CGM"].dropna().unique().tolist())
-cats_lista  = sorted(df["Categoría"].dropna().unique().tolist())
-coms_lista  = sorted(df["Comisaría"].dropna().unique().tolist())
-
-# ── HELPERS ────────────────────────────────────────────────────────────────────
-def kpi_card(icon, label, val, delta=None, sub="", invert=False):
-    if delta is None:
-        delta_html = f"<div class='kpi-d-neu'>{sub}</div>" if sub else ""
-        sub_html   = ""
+    if errores:
+        st.session_state.error_msg = "  ·  ".join(errores)
+        st.rerun()
     else:
-        if delta > 0:
-            cls, arr = ("kpi-d-neg","▲") if invert else ("kpi-d-pos","▲")
-        elif delta < 0:
-            cls, arr = ("kpi-d-pos","▼") if invert else ("kpi-d-neg","▼")
-        else:
-            cls, arr = "kpi-d-neu","●"
-        delta_html = f"<div class='{cls}'>{arr} {abs(delta):.1f}% vs período ant.</div>"
-        sub_html   = f"<div class='kpi-sub'>{sub}</div>" if sub else ""
-    st.markdown(f"""
-    <div class="kpi">
-        <div class="kpi-icon">{icon}</div>
-        <div class="kpi-label">{label}</div>
-        <div class="kpi-val">{val}</div>
-        {delta_html}{sub_html}
-    </div>""", unsafe_allow_html=True)
+        try:
+            tz_argentina   = pytz.timezone("America/Argentina/Buenos_Aires")
+            marca_temporal = datetime.now(tz_argentina).strftime("%d/%m/%Y %H:%M:%S")
+            fecha_str      = fecha_val.strftime("%d/%m/%Y")
+            hora_obj       = datetime.strptime(horario_input, "%H:%M")
+            horario_str    = hora_obj.strftime("%H:%M:%S")
 
-def card(title, icon=""):
-    st.markdown(f'<div class="card"><div class="card-title"><span>{icon}</span>{title}</div>', unsafe_allow_html=True)
+            nueva_fila = {
+                "Marca temporal":     marca_temporal,
+                "Fecha evento":       fecha_str,
+                "Horario":            horario_str,
+                "¿Se ve por cámara?": camara_val,
+                "Camara del Evento":  num_camara_val,
+                "CGM":                cgm_val,
+                "Categoria":          categoria_val,
+                "Comisaria":          comisaria_val,
+                "Subcategoria":       subcat_val if subcat_val != "Seleccione" else ""
+            }
 
-def end_card():
-    st.markdown('</div>', unsafe_allow_html=True)
+            sub_cols = {
+                "Subcategoria Robo":                  "",
+                "Subcategoria Hurto":                 "",
+                "Subcategoria Accidente de tránsito": "",
+                "Subcategoria Conflicto":             "",
+                "Subcategoria Violencia":             "",
+                "Subcategoria Heridos":               "",
+                "Subcategoria Persecución":           "",
+                "Subcategoria Obito":                 "",
+                "Subcategoria Otros":                 "",
+                "Subcategoria Incendios":             ""
+            }
 
-def pie_donut(df_filt, mode):
-    col_p  = "Turno" if mode == "turno" else "TipoDia"
-    pdata  = df_filt[col_p].value_counts().reset_index()
-    pdata.columns = [col_p, "n"]
-    colors = [ACCENT, GREEN, AMBER, RED, "#38bdf8"]
-    total  = pdata["n"].sum()
-    fig = go.Figure(go.Pie(
-        labels=pdata[col_p], values=pdata["n"], hole=0.55,
-        marker=dict(colors=colors[:len(pdata)], line=dict(color=BG, width=3)),
-        textinfo="none", sort=True, direction="clockwise",
-        hovertemplate="%{label}<br><b>%{value}</b> (%{percent})<extra></extra>",
-    ))
-    ann, ang = [], 90.0
-    for _, row in pdata.iterrows():
-        p  = row["n"] / total
-        sw = p * 360
-        ma = math.radians(ang - sw / 2)
-        ann.append(dict(
-            text=f"<b>{row[col_p]}</b><br>{p*100:.0f}%",
-            x=0.5+0.65*0.5*math.cos(ma), y=0.5+0.65*0.5*math.sin(ma),
-            xref="paper", yref="paper", showarrow=False,
-            font=dict(size=9, color="#fff"),
-            bgcolor="rgba(20,20,40,0.82)",
-            bordercolor="rgba(255,255,255,0.1)",
-            borderpad=4, borderwidth=1, align="center",
-        ))
-        ang -= sw
-    ann.append(dict(
-        text=f"<b>{total:,}</b><br><span style='font-size:9px'>Total</span>",
-        x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False,
-        font=dict(size=13, color=TEXT), align="center",
-    ))
-    lyt = {**CHART}
-    lyt["margin"] = dict(l=10, r=10, t=10, b=28)
-    fig.update_layout(**lyt, height=280, annotations=ann, showlegend=True,
-        legend=dict(orientation="h", x=0.5, y=-0.04, xanchor="center",
-                    font=dict(size=9, color=TEXT2), bgcolor="rgba(0,0,0,0)"))
-    return fig
+            col_sub = f"Subcategoria {categoria_val}"
+            if col_sub in sub_cols:
+                sub_cols[col_sub] = nueva_fila["Subcategoria"]
 
-# ── TOPBAR ─────────────────────────────────────────────────────────────────────
-cl, cm, cr = st.columns([1, 8, 1])
-with cl:
-    if os.path.exists("logo_izquierda.png"): st.image("logo_izquierda.png", width=58)
-with cm:
-    st.markdown("""
-    <div class="topbar">
-        <div>
-            <div class="topbar-title">Centro de Operaciones Lomas &nbsp;·&nbsp; Análisis Operativo</div>
-            <div class="topbar-sub">Reporte interactivo &nbsp;·&nbsp; Sistema de monitoreo del Partido de Lomas de Zamora</div>
-        </div>
-        <div class="topbar-live"><span class="live-dot"></span>EN VIVO</div>
-    </div>""", unsafe_allow_html=True)
-with cr:
-    if os.path.exists("logo_derecha.png"): st.image("logo_derecha.png", width=58)
+            nueva_fila.update(sub_cols)
 
-# ── FILTROS ─────────────────────────────────────────────────────────────────────
-with st.expander("⚙️  Filtros", expanded=True):
-    f1, f2, f3, f4, f5, f6 = st.columns([2.4, 1.4, 1.6, 1.4, 1.4, 1.2])
-    with f1:
-        rango = st.date_input("Período", value=(max_d.replace(day=1), max_d),
-                              min_value=min_d, max_value=max_d, format="DD/MM/YYYY")
-    with f2:
-        cgms_sel = st.multiselect("CGM", cgms_lista, default=[], placeholder="Todos")
-    with f3:
-        cats_sel = st.multiselect("Categoría", cats_lista, default=[], placeholder="Todas")
-    with f4:
-        subs_disp = df["Subcategoria"] if not cats_sel else df[df["Categoría"].isin(cats_sel)]["Subcategoria"]
-        subs_lista = sorted(subs_disp[subs_disp.str.strip()!=""].dropna().unique().tolist())
-        subs_sel = st.multiselect("Subcategoría", subs_lista, default=[], placeholder="Todas")
-    with f5:
-        coms_sel = st.multiselect("Comisaría", coms_lista, default=[], placeholder="Todas")
-    with f6:
-        turnos_sel = st.multiselect("Turno", ["Mañana","Tarde","Noche"], default=[], placeholder="Todos")
+            columnas   = sheet.row_values(1)
+            fila_final = [nueva_fila.get(col, "") for col in columnas]
 
-# ── FILTRADO ───────────────────────────────────────────────────────────────────
-if isinstance(rango, tuple) and len(rango) == 2:   sd, ed = rango
-elif isinstance(rango, tuple) and len(rango) == 1: sd = ed = rango[0]
-else:                                               sd = ed = rango
+            sheet.append_row(fila_final)
 
-days    = (ed - sd).days + 1
-prev_ed = sd - timedelta(days=1)
-prev_sd = prev_ed - timedelta(days=days - 1)
+            st.session_state.success_msg = "Novedad registrada correctamente."
+            st.session_state.form_key += 1
+            st.rerun()
 
-def filtrar(frame, d0, d1):
-    m = (frame["fecha"] >= d0) & (frame["fecha"] <= d1)
-    if cgms_sel:   m &= frame["CGM"].isin(cgms_sel)
-    if cats_sel:   m &= frame["Categoría"].isin(cats_sel)
-    if subs_sel:   m &= frame["Subcategoria"].isin(subs_sel)
-    if coms_sel:   m &= frame["Comisaría"].isin(coms_sel)
-    if turnos_sel: m &= frame["Turno"].isin(turnos_sel)
-    return frame[m].copy()
-
-dfc = filtrar(df, sd, ed)
-dfp = filtrar(df, prev_sd, prev_ed)
-
-n_cur  = len(dfc); n_prev = len(dfp)
-d_pct  = ((n_cur - n_prev) / n_prev * 100) if n_prev else 0
-cam_pct  = dfc["con_camara"].mean()*100 if n_cur else 0
-cam_prev = dfp["con_camara"].mean()*100 if len(dfp) else 0
-d_cam    = cam_pct - cam_prev
-riesgo_med  = dfc["riesgo"].mean() if n_cur else 0
-riesgo_prev = dfp["riesgo"].mean() if len(dfp) else 0
-d_riesgo    = riesgo_med - riesgo_prev
-hora_pico = dfc["hora"].mode()[0] if n_cur else 0
-cat_top   = dfc["Categoría"].value_counts().index[0] if n_cur else "—"
-cat_top_n = dfc["Categoría"].value_counts().iloc[0]  if n_cur else 0
-cgm_top   = dfc["CGM"].value_counts().index[0] if n_cur else "—"
-
-# ── ALERTA ─────────────────────────────────────────────────────────────────────
-if n_cur > 0:
-    if d_pct > 20:
-        st.markdown(f'<div class="alert">🚨 <b>Alerta:</b> Novedades <b>+{d_pct:.1f}%</b> vs período anterior · Categoría líder: <b>{cat_top}</b> ({cat_top_n}) · CGM más activo: <b>{cgm_top}</b></div>', unsafe_allow_html=True)
-    elif d_pct < -20:
-        st.markdown(f'<div class="alert-ok">✅ <b>Tendencia positiva:</b> Novedades <b>{d_pct:.1f}%</b> vs período anterior</div>', unsafe_allow_html=True)
-
-# ── NAV + EXPORT ───────────────────────────────────────────────────────────────
-n1, n2, n3, sp, dl = st.columns([1.1, 1.2, 1.2, 4.5, 1.4])
-with n1:
-    if st.button("📊 Ejecutivo", type="primary" if st.session_state.vista=="ejecutiva" else "secondary", use_container_width=True):
-        st.session_state.vista = "ejecutiva"; st.rerun()
-with n2:
-    if st.button("🗺️ Territorial", type="primary" if st.session_state.vista=="territorial" else "secondary", use_container_width=True):
-        st.session_state.vista = "territorial"; st.rerun()
-with n3:
-    if st.button("📡 Por CGM", type="primary" if st.session_state.vista=="cgm" else "secondary", use_container_width=True):
-        st.session_state.vista = "cgm"; st.rerun()
-with dl:
-    buf = io.BytesIO()
-    dfc.drop(columns=["hora","weekday","riesgo","con_camara"], errors="ignore").to_excel(buf, index=False, engine="openpyxl")
-    st.download_button("⬇ Exportar", data=buf.getvalue(),
-        file_name=f"col_{sd}_{ed}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True)
-
-st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  VISTA EJECUTIVA
-# ══════════════════════════════════════════════════════════════════════════════
-if st.session_state.vista == "ejecutiva":
-
-    # KPIs fila 1
-    k1,k2,k3,k4,k5,k6 = st.columns(6)
-    with k1: kpi_card("📋","Total Novedades",   f"{n_cur:,}",          delta=d_pct,     invert=True)
-    with k2: kpi_card("📷","Con Cámara",        f"{cam_pct:.1f}%",     delta=d_cam,     sub=f"{int(dfc['con_camara'].sum())} eventos")
-    with k3: kpi_card("⚠️","Índice de Riesgo",  f"{riesgo_med:.2f}",   delta=d_riesgo,  sub="Escala 1–5", invert=True)
-    with k4: kpi_card("🏘️","CGM más activo",    cgm_top,               delta=None,      sub=f"{dfc['CGM'].value_counts().iloc[0]} casos" if n_cur else "")
-    with k5: kpi_card("🕐","Hora Pico",         f"{hora_pico:02d}:00", delta=None,      sub=f"Franja {hora_pico//3*3:02d}–{hora_pico//3*3+3:02d}hs")
-    with k6: kpi_card("🔺","Cat. Líder",        cat_top,               delta=None,      sub=f"{cat_top_n} casos")
-
-    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-
-    # Fila 1: Evolución + Heatmap día×turno
-    col_ev, col_hm = st.columns([3, 2])
-
-    with col_ev:
-        card("Evolución Diaria","📈")
-        daily_c = dfc.groupby("fecha").size().reset_index(name="n")
-        daily_p = dfp.groupby("fecha").size().reset_index(name="n")
-        fig = go.Figure()
-        if len(daily_p):
-            fig.add_trace(go.Scatter(
-                x=daily_c["fecha"].astype(str).values[:len(daily_p)],
-                y=daily_p["n"].values[:len(daily_c)], name="Anterior",
-                fill="tozeroy", fillcolor="rgba(100,116,139,0.1)",
-                line=dict(color="rgba(100,116,139,0.35)", width=1, dash="dot"),
-                mode="lines", hovertemplate="Anterior: <b>%{y}</b><extra></extra>"
-            ))
-        fig.add_trace(go.Scatter(
-            x=daily_c["fecha"].astype(str), y=daily_c["n"], name="Actual",
-            fill="tozeroy", fillcolor="rgba(139,92,246,0.15)",
-            line=dict(color=ACCENT, width=2.5, shape="spline"),
-            mode="lines+markers", marker=dict(size=5, color=ACCENT, line=dict(color=BG2, width=1.5)),
-            hovertemplate="%{x}<br><b>%{y} novedades</b><extra></extra>"
-        ))
-        if len(daily_c) >= 7:
-            daily_c["mm7"] = daily_c["n"].rolling(7, min_periods=1).mean()
-            fig.add_trace(go.Scatter(
-                x=daily_c["fecha"].astype(str), y=daily_c["mm7"].round(1), name="Media 7d",
-                line=dict(color=AMBER, width=1.8, dash="dash"), mode="lines",
-                hovertemplate="Media 7d: <b>%{y:.1f}</b><extra></extra>"
-            ))
-        fig.update_layout(**CHART, height=265,
-            legend=dict(orientation="h", y=1.1, x=0, font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
-            xaxis=dict(showgrid=False, tickangle=-30, tickfont=dict(size=9)),
-            yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.05)", zeroline=False))
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar":False})
-        end_card()
-
-    with col_hm:
-        card("Intensidad Día × Turno","🌡️")
-        dias_ord = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"]
-        turn_ord = ["Mañana","Tarde","Noche"]
-        hm  = dfc.groupby(["DiaNom","Turno"]).size().reset_index(name="n")
-        piv = hm.pivot(index="DiaNom", columns="Turno", values="n").fillna(0)
-        piv = piv.reindex(index=[d for d in dias_ord if d in piv.index],
-                          columns=[t for t in turn_ord if t in piv.columns])
-        fig2 = go.Figure(go.Heatmap(
-            z=piv.values, x=list(piv.columns), y=list(piv.index),
-            colorscale=[[0,BG2],[0.4,"#4c1d95"],[1,ACCENT]],
-            showscale=True, colorbar=dict(thickness=8, len=0.8, tickfont=dict(size=9,color=TEXT2)),
-            hovertemplate="<b>%{y} · %{x}</b><br>%{z:.0f} novedades<extra></extra>",
-            texttemplate="%{z:.0f}", textfont=dict(size=11, color=TEXT)
-        ))
-        fig2.update_layout(**CHART, height=265,
-            xaxis=dict(showgrid=False, side="top"),
-            yaxis=dict(showgrid=False, autorange="reversed"))
-        st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar":False})
-        end_card()
-
-    # Fila 2: Barras categoría + Donut + Ranking comisarías
-    col_cat, col_don, col_rank = st.columns([2.4, 1.6, 2])
-
-    with col_cat:
-        card("Novedades por Categoría  ·  color = nivel de riesgo","📂")
-        cat_df = dfc["Categoría"].value_counts().reset_index()
-        cat_df.columns = ["cat","n"]
-        cat_df["pct"]    = cat_df["n"] / cat_df["n"].sum() * 100
-        risk_map = {"Robo":3,"Hurto":2,"Heridos":5,"Obito":5,"Violencia":4,
-                    "Persecución":3,"Accidente de tránsito":2,"Conflicto":2,"Incendios":3,"Otros":1}
-        cat_df["riesgo"] = cat_df["cat"].map(risk_map).fillna(1)
-        cat_df = cat_df.sort_values("n", ascending=True)
-        bar_colors = [RED if r>=4 else AMBER if r==3 else ACCENT for r in cat_df["riesgo"]]
-        fig3 = go.Figure()
-        fig3.add_trace(go.Bar(
-            x=cat_df["n"], y=cat_df["cat"], orientation="h",
-            marker=dict(color=bar_colors, line=dict(color="rgba(0,0,0,0)",width=0)),
-            text=[f"{n}  ({p:.0f}%)" for n,p in zip(cat_df["n"],cat_df["pct"])],
-            textposition="outside", textfont=dict(size=10, color=TEXT2),
-            hovertemplate="<b>%{y}</b><br>%{x} novedades<extra></extra>",
-            width=0.65, showlegend=False,
-        ))
-        for color, label in [(RED,"Alto"),(AMBER,"Medio"),(ACCENT,"Bajo")]:
-            fig3.add_trace(go.Bar(x=[None], y=[None], marker_color=color, name=label, showlegend=True))
-        fig3.update_layout(**CHART, height=305, bargap=0.3, barmode="overlay",
-            xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
-            yaxis=dict(showgrid=False, tickfont=dict(size=10)),
-            legend=dict(orientation="h", y=-0.08, x=0, font=dict(size=9),
-                        title=dict(text="Riesgo  ", font=dict(size=9,color=TEXT2)),
-                        bgcolor="rgba(0,0,0,0)"))
-        st.plotly_chart(fig3, use_container_width=True, config={"displayModeBar":False})
-        end_card()
-
-    with col_don:
-        card("Participación Turno / Día","🌙")
-        mode = st.session_state["pie_mode"]
-        tc, dc = st.columns(2)
-        with tc:
-            if st.button("Turno", key="pt", type="primary" if mode=="turno" else "secondary", use_container_width=True):
-                st.session_state["pie_mode"] = "turno"; st.rerun()
-        with dc:
-            if st.button("Día", key="pd", type="primary" if mode=="dia" else "secondary", use_container_width=True):
-                st.session_state["pie_mode"] = "dia"; st.rerun()
-        st.plotly_chart(pie_donut(dfc, mode), use_container_width=True, config={"displayModeBar":False})
-        end_card()
-
-    with col_rank:
-        card("Ranking Comisarías","🏆")
-        com_df = dfc["Comisaría"].value_counts().reset_index()
-        com_df.columns = ["com","n"]
-        com_df["rank"] = range(1, len(com_df)+1)
-        com_df = com_df.head(10).sort_values("n", ascending=True)
-        bar_c  = [RED if r==1 else AMBER if r==2 else ACCENT if r==3 else "#4c1d95"
-                  for r in com_df["rank"].iloc[::-1]][::-1]
-        fig5 = go.Figure(go.Bar(
-            x=com_df["n"], y=com_df["com"], orientation="h",
-            marker=dict(color=bar_c, line=dict(color="rgba(0,0,0,0)",width=0)),
-            text=com_df["n"], textposition="outside",
-            textfont=dict(size=10, color=TEXT2),
-            hovertemplate="<b>%{y}</b><br>%{x} novedades<extra></extra>",
-            width=0.65,
-        ))
-        fig5.update_layout(**CHART, height=305, bargap=0.28,
-            xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
-            yaxis=dict(showgrid=False, tickfont=dict(size=10)))
-        st.plotly_chart(fig5, use_container_width=True, config={"displayModeBar":False})
-        end_card()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  VISTA TERRITORIAL
-# ══════════════════════════════════════════════════════════════════════════════
-elif st.session_state.vista == "territorial":
-
-    com_top  = dfc["Comisaría"].value_counts()
-    n_coms   = dfc["Comisaría"].nunique()
-    prom_com = n_cur / n_coms if n_coms else 0
-    cat_cam  = dfc[dfc["con_camara"]]["Categoría"].value_counts().index[0] if dfc["con_camara"].sum() else "—"
-    cam_n    = dfc[dfc["con_camara"]]["Categoría"].value_counts().iloc[0]  if dfc["con_camara"].sum() else 0
-
-    k1,k2,k3,k4 = st.columns(4)
-    with k1: kpi_card("🏢","Comisarías activas", str(n_coms),                          delta=None)
-    with k2: kpi_card("📍","Comisaría líder",    com_top.index[0] if n_cur else "—",   delta=None, sub=f"{com_top.iloc[0]} casos" if n_cur else "")
-    with k3: kpi_card("📊","Promedio / Comisaría", f"{prom_com:.0f}",                  delta=None, sub="novedades")
-    with k4: kpi_card("📷","Cat. más filmada",   cat_cam,                               delta=None, sub=f"{cam_n} con cámara")
-
-    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-
-    col_a, col_b = st.columns([3, 2])
-
-    with col_a:
-        card("Comisaría × Categoría (Top 5 categorías)","🗂️")
-        ct    = dfc.groupby(["Comisaría","Categoría"]).size().reset_index(name="n")
-        top5c = dfc["Categoría"].value_counts().head(5).index.tolist()
-        ct    = ct[ct["Categoría"].isin(top5c)]
-        fig6 = px.bar(ct, x="Comisaría", y="n", color="Categoría",
-                      color_discrete_sequence=SEQ_DIV, barmode="stack")
-        fig6.update_layout(**CHART, height=305,
-            xaxis=dict(showgrid=False, tickangle=-40, tickfont=dict(size=9), title=None),
-            yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.05)", zeroline=False, title=None),
-            legend=dict(orientation="h", y=1.12, x=0, font=dict(size=9), title_text="", bgcolor="rgba(0,0,0,0)"))
-        st.plotly_chart(fig6, use_container_width=True, config={"displayModeBar":False})
-        end_card()
-
-    with col_b:
-        card("% Cobertura de Cámara por Comisaría","🎥")
-        cam_c = dfc.groupby("Comisaría")["con_camara"].agg(["sum","count"]).reset_index()
-        cam_c.columns = ["Comisaría","con_cam","total"]
-        cam_c["pct"] = cam_c["con_cam"] / cam_c["total"] * 100
-        cam_c = cam_c.sort_values("pct", ascending=True).tail(12)
-        fig7 = go.Figure(go.Bar(
-            x=cam_c["pct"], y=cam_c["Comisaría"], orientation="h",
-            marker=dict(color=cam_c["pct"],
-                        colorscale=[[0,"#1e1b4b"],[0.5,ACCENT],[1,GREEN]],
-                        showscale=False, line=dict(color="rgba(0,0,0,0)",width=0)),
-            text=[f"{p:.0f}%" for p in cam_c["pct"]],
-            textposition="outside", textfont=dict(size=10, color=TEXT2),
-            hovertemplate="<b>%{y}</b><br>%{x:.1f}% cámara<extra></extra>",
-            width=0.65,
-        ))
-        fig7.update_layout(**CHART, height=305, bargap=0.28,
-            xaxis=dict(showgrid=False, showticklabels=False, zeroline=False, range=[0,115]),
-            yaxis=dict(showgrid=False, tickfont=dict(size=10)))
-        st.plotly_chart(fig7, use_container_width=True, config={"displayModeBar":False})
-        end_card()
-
-    card("Mapa de Calor  ·  Comisaría × Día de Semana","🌐")
-    dias_ord = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"]
-    mat  = dfc.groupby(["Comisaría","DiaNom"]).size().reset_index(name="n")
-    piv2 = mat.pivot(index="Comisaría", columns="DiaNom", values="n").fillna(0)
-    piv2 = piv2.reindex(columns=[d for d in dias_ord if d in piv2.columns])
-    fig8 = go.Figure(go.Heatmap(
-        z=piv2.values, x=list(piv2.columns), y=list(piv2.index),
-        colorscale=[[0,BG2],[0.5,"#4c1d95"],[1,ACCENT]],
-        showscale=True, colorbar=dict(thickness=8, tickfont=dict(size=9,color=TEXT2)),
-        hovertemplate="<b>%{y}</b> · <b>%{x}</b><br>%{z:.0f} novedades<extra></extra>",
-        texttemplate="%{z:.0f}", textfont=dict(size=9, color=TEXT)
-    ))
-    fig8.update_layout(**CHART, height=360,
-        xaxis=dict(showgrid=False, side="top"),
-        yaxis=dict(showgrid=False))
-    st.plotly_chart(fig8, use_container_width=True, config={"displayModeBar":False})
-    end_card()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  VISTA POR CGM
-# ══════════════════════════════════════════════════════════════════════════════
-elif st.session_state.vista == "cgm":
-
-    n_cgms     = dfc["CGM"].nunique()
-    cgm_lider  = dfc["CGM"].value_counts().index[0] if n_cur else "—"
-    cgm_n_lid  = dfc["CGM"].value_counts().iloc[0]  if n_cur else 0
-    prom_cgm   = n_cur / n_cgms if n_cgms else 0
-    # CGM con mayor riesgo promedio
-    cgm_riesgo = dfc.groupby("CGM")["riesgo"].mean().idxmax() if n_cur else "—"
-    cgm_risk_v = dfc.groupby("CGM")["riesgo"].mean().max()    if n_cur else 0
-
-    k1,k2,k3,k4 = st.columns(4)
-    with k1: kpi_card("🏘️","CGMs activos",     str(n_cgms),   delta=None)
-    with k2: kpi_card("🔝","CGM líder",         cgm_lider,     delta=None, sub=f"{cgm_n_lid} novedades")
-    with k3: kpi_card("📊","Promedio / CGM",    f"{prom_cgm:.0f}", delta=None, sub="novedades")
-    with k4: kpi_card("⚠️","CGM mayor riesgo",  cgm_riesgo,    delta=None, sub=f"Índice {cgm_risk_v:.2f}")
-
-    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-
-    # Fila 1: Barras CGM + Heatmap CGM×Turno
-    col_c1, col_c2 = st.columns([3, 2])
-
-    with col_c1:
-        card("Novedades Totales por CGM","🏘️")
-        cgm_df = dfc["CGM"].value_counts().reset_index()
-        cgm_df.columns = ["cgm","n"]
-        cgm_df["pct"] = cgm_df["n"] / cgm_df["n"].sum() * 100
-        cgm_df = cgm_df.sort_values("n", ascending=True)
-        # Color degradado por volumen
-        fig_c1 = go.Figure(go.Bar(
-            x=cgm_df["n"], y=cgm_df["cgm"], orientation="h",
-            marker=dict(
-                color=cgm_df["n"],
-                colorscale=[[0,"#2e1065"],[0.5,ACCENT],[1,"#a78bfa"]],
-                showscale=False, line=dict(color="rgba(0,0,0,0)",width=0)
-            ),
-            text=[f"{n}  ({p:.0f}%)" for n,p in zip(cgm_df["n"],cgm_df["pct"])],
-            textposition="outside", textfont=dict(size=10, color=TEXT2),
-            hovertemplate="<b>%{y}</b><br>%{x} novedades<extra></extra>",
-            width=0.65,
-        ))
-        fig_c1.update_layout(**CHART, height=360, bargap=0.25,
-            xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
-            yaxis=dict(showgrid=False, tickfont=dict(size=10)))
-        st.plotly_chart(fig_c1, use_container_width=True, config={"displayModeBar":False})
-        end_card()
-
-    with col_c2:
-        card("Intensidad CGM × Turno","🌡️")
-        turn_ord = ["Mañana","Tarde","Noche"]
-        hm_c = dfc.groupby(["CGM","Turno"]).size().reset_index(name="n")
-        piv_c = hm_c.pivot(index="CGM", columns="Turno", values="n").fillna(0)
-        piv_c = piv_c.reindex(columns=[t for t in turn_ord if t in piv_c.columns])
-        # Ordenar por total descendente
-        piv_c = piv_c.loc[piv_c.sum(axis=1).sort_values(ascending=True).index]
-        fig_c2 = go.Figure(go.Heatmap(
-            z=piv_c.values, x=list(piv_c.columns), y=list(piv_c.index),
-            colorscale=[[0,BG2],[0.4,"#4c1d95"],[1,ACCENT]],
-            showscale=True, colorbar=dict(thickness=8, tickfont=dict(size=9,color=TEXT2)),
-            hovertemplate="<b>%{y}</b> · %{x}<br>%{z:.0f} novedades<extra></extra>",
-            texttemplate="%{z:.0f}", textfont=dict(size=10, color=TEXT)
-        ))
-        fig_c2.update_layout(**CHART, height=360,
-            xaxis=dict(showgrid=False, side="top"),
-            yaxis=dict(showgrid=False))
-        st.plotly_chart(fig_c2, use_container_width=True, config={"displayModeBar":False})
-        end_card()
-
-    # Fila 2: CGM × Categoría stacked + Índice de riesgo por CGM
-    col_c3, col_c4 = st.columns([3, 2])
-
-    with col_c3:
-        card("Distribución de Categorías por CGM","📂")
-        top5c = dfc["Categoría"].value_counts().head(5).index.tolist()
-        cgm_cat = dfc[dfc["Categoría"].isin(top5c)].groupby(["CGM","Categoría"]).size().reset_index(name="n")
-        # Ordenar CGMs por total
-        order_cgm = dfc["CGM"].value_counts().index.tolist()
-        cgm_cat["CGM"] = pd.Categorical(cgm_cat["CGM"], categories=order_cgm, ordered=True)
-        fig_c3 = px.bar(cgm_cat, x="CGM", y="n", color="Categoría",
-                        color_discrete_sequence=SEQ_DIV, barmode="stack")
-        fig_c3.update_layout(**CHART, height=300,
-            xaxis=dict(showgrid=False, tickangle=-35, tickfont=dict(size=9), title=None),
-            yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.05)", zeroline=False, title=None),
-            legend=dict(orientation="h", y=1.12, x=0, font=dict(size=9), title_text="", bgcolor="rgba(0,0,0,0)"))
-        st.plotly_chart(fig_c3, use_container_width=True, config={"displayModeBar":False})
-        end_card()
-
-    with col_c4:
-        card("Índice de Riesgo Promedio por CGM","⚠️")
-        risk_cgm = dfc.groupby("CGM")["riesgo"].mean().reset_index()
-        risk_cgm.columns = ["cgm","r"]
-        risk_cgm = risk_cgm.sort_values("r", ascending=True)
-        # Color: verde→amarillo→rojo según riesgo
-        fig_c4 = go.Figure(go.Bar(
-            x=risk_cgm["r"], y=risk_cgm["cgm"], orientation="h",
-            marker=dict(
-                color=risk_cgm["r"],
-                colorscale=[[0,GREEN],[0.5,AMBER],[1,RED]],
-                showscale=True,
-                colorbar=dict(thickness=8, tickfont=dict(size=9,color=TEXT2),
-                              tickvals=[1,2,3,4,5], ticktext=["1","2","3","4","5"]),
-                line=dict(color="rgba(0,0,0,0)",width=0)
-            ),
-            text=[f"{r:.2f}" for r in risk_cgm["r"]],
-            textposition="outside", textfont=dict(size=10, color=TEXT2),
-            hovertemplate="<b>%{y}</b><br>Riesgo: %{x:.2f}<extra></extra>",
-            width=0.65,
-        ))
-        fig_c4.update_layout(**CHART, height=300, bargap=0.28,
-            xaxis=dict(showgrid=False, showticklabels=False, zeroline=False, range=[0, 5.5]),
-            yaxis=dict(showgrid=False, tickfont=dict(size=10)))
-        st.plotly_chart(fig_c4, use_container_width=True, config={"displayModeBar":False})
-        end_card()
-
-    # Fila 3: Evolución mensual por CGM (top 6)
-    card("Evolución Mensual de Novedades por CGM (Top 6)","📈")
-    top6_cgm = dfc["CGM"].value_counts().head(6).index.tolist()
-    ev_cgm   = dfc[dfc["CGM"].isin(top6_cgm)].groupby(["mes","CGM"]).size().reset_index(name="n")
-    fig_c5 = px.line(ev_cgm, x="mes", y="n", color="CGM",
-                     color_discrete_sequence=[ACCENT,"#a78bfa",GREEN,AMBER,RED,"#38bdf8"],
-                     markers=True)
-    fig_c5.update_traces(line_width=2.2, marker_size=6)
-    fig_c5.update_layout(**CHART, height=270,
-        xaxis=dict(showgrid=False, tickangle=-30, tickfont=dict(size=9), title=None),
-        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.05)", zeroline=False, title=None),
-        legend=dict(orientation="h", y=1.12, x=0, font=dict(size=9), title_text="", bgcolor="rgba(0,0,0,0)"))
-    st.plotly_chart(fig_c5, use_container_width=True, config={"displayModeBar":False})
-    end_card()
-
-    # Fila 4: % Cámara por CGM + Mapa calor CGM × día
-    col_c6, col_c7 = st.columns([2, 3])
-
-    with col_c6:
-        card("% Cobertura de Cámara por CGM","🎥")
-        cam_cgm = dfc.groupby("CGM")["con_camara"].agg(["sum","count"]).reset_index()
-        cam_cgm.columns = ["cgm","con","total"]
-        cam_cgm["pct"] = cam_cgm["con"] / cam_cgm["total"] * 100
-        cam_cgm = cam_cgm.sort_values("pct", ascending=True)
-        fig_c6 = go.Figure(go.Bar(
-            x=cam_cgm["pct"], y=cam_cgm["cgm"], orientation="h",
-            marker=dict(color=cam_cgm["pct"],
-                        colorscale=[[0,"#1e1b4b"],[0.5,ACCENT],[1,GREEN]],
-                        showscale=False, line=dict(color="rgba(0,0,0,0)",width=0)),
-            text=[f"{p:.0f}%" for p in cam_cgm["pct"]],
-            textposition="outside", textfont=dict(size=10, color=TEXT2),
-            hovertemplate="<b>%{y}</b><br>%{x:.1f}% cámara<extra></extra>",
-            width=0.65,
-        ))
-        fig_c6.update_layout(**CHART, height=350, bargap=0.25,
-            xaxis=dict(showgrid=False, showticklabels=False, zeroline=False, range=[0,115]),
-            yaxis=dict(showgrid=False, tickfont=dict(size=10)))
-        st.plotly_chart(fig_c6, use_container_width=True, config={"displayModeBar":False})
-        end_card()
-
-    with col_c7:
-        card("Mapa de Calor  ·  CGM × Día de Semana","🗓️")
-        dias_ord2 = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"]
-        mat2  = dfc.groupby(["CGM","DiaNom"]).size().reset_index(name="n")
-        piv3  = mat2.pivot(index="CGM", columns="DiaNom", values="n").fillna(0)
-        piv3  = piv3.reindex(columns=[d for d in dias_ord2 if d in piv3.columns])
-        piv3  = piv3.loc[piv3.sum(axis=1).sort_values(ascending=True).index]
-        fig_c7 = go.Figure(go.Heatmap(
-            z=piv3.values, x=list(piv3.columns), y=list(piv3.index),
-            colorscale=[[0,BG2],[0.5,"#4c1d95"],[1,ACCENT]],
-            showscale=True, colorbar=dict(thickness=8, tickfont=dict(size=9,color=TEXT2)),
-            hovertemplate="<b>%{y}</b> · <b>%{x}</b><br>%{z:.0f} novedades<extra></extra>",
-            texttemplate="%{z:.0f}", textfont=dict(size=9, color=TEXT)
-        ))
-        fig_c7.update_layout(**CHART, height=350,
-            xaxis=dict(showgrid=False, side="top"),
-            yaxis=dict(showgrid=False))
-        st.plotly_chart(fig_c7, use_container_width=True, config={"displayModeBar":False})
-        end_card()
-
-# ── FOOTER ─────────────────────────────────────────────────────────────────────
-st.markdown(f"""
-<div style="text-align:center;color:{MUTED};font-size:.7rem;margin-top:10px;padding:6px;">
-    COL · Análisis Operativo &nbsp;·&nbsp; {sd.strftime('%d/%m/%Y')} → {ed.strftime('%d/%m/%Y')}
-    &nbsp;·&nbsp; {n_cur:,} registros &nbsp;·&nbsp; Actualización automática cada 5 min
-</div>""", unsafe_allow_html=True)
+        except Exception as e:
+            st.session_state.error_msg = f"Error al guardar: {str(e)}"
+            st.rerun()
